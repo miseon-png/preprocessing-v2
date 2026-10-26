@@ -437,7 +437,7 @@ def parse_csv_purchase(uploaded_file):
         except: continue
     return pd.DataFrame()
 
-# [핵심] 블록 단위 동적 파싱 로직
+# [핵심 수정] 완벽하게 차단벽이 적용된 블록 단위 파싱 로직
 def get_production_records(xls, exclude_sheets):
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고") and not re.match(r"^\d{2}\.\d{2}$", s.strip())]
     records = []
@@ -460,17 +460,27 @@ def get_production_records(xls, exclude_sheets):
                     if val != 'nan' and val and val not in ['롯트', '총중량', '담당자'] and not val.replace('.', '').isdigit():
                         ingredients.append({'name': val, 'col': c_idx})
                 
-                # 3. 제품명 추출
+                # 3. 제품명 추출 (기준행 바로 아랫줄)
                 if idx + 1 >= len(df_s): continue
                 product_name = str(df_s.iloc[idx + 1, 0]).strip()
                 if product_name == 'nan' or not product_name: continue
                 
-                # 4. 준비량 및 실투입량 행 찾기 (아래 15줄 이내 탐색)
+                # 4. 준비량 및 실투입량 행 찾기 (차단벽 로직 적용)
                 prep_row, act_row = None, None
-                for scan_idx in range(idx + 1, min(idx + 15, len(df_s))):
-                    scan_vals = [str(x).replace(" ", "") for x in df_s.iloc[scan_idx].tolist()]
-                    if any('전처리준비' in x for x in scan_vals): prep_row = scan_idx
-                    if any('실투입' in x for x in scan_vals): act_row = scan_idx
+                # 제품명 행 다음(idx + 2)부터 아래로 스캔
+                for scan_idx in range(idx + 2, min(idx + 20, len(df_s))):
+                    scan_vals_raw = [str(x) for x in df_s.iloc[scan_idx].tolist()]
+                    scan_vals = [x.replace(" ", "") for x in scan_vals_raw]
+                    
+                    # [★차단벽] 다음 제품 블록(발주/수량)이 등장하면 남의 구역이므로 즉시 탐색 중단!
+                    if '발주' in scan_vals and '수량' in scan_vals:
+                        break
+                    
+                    # 아직 찾지 못했을 때만(None) 행 번호 기록
+                    if any('전처리준비' in x for x in scan_vals) and prep_row is None: 
+                        prep_row = scan_idx
+                    if any('실투입' in x for x in scan_vals) and act_row is None: 
+                        act_row = scan_idx
                 
                 # 5. 각 원료별 데이터 추출
                 for ing in ingredients:
