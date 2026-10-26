@@ -46,7 +46,7 @@ def get_gspread_client():
     return client.open_by_url(sheet_url)
 
 # ---------------------------------------------------------
-# [신규] 구글 시트 기반 이월 재고 관리 (로컬 DB 대체)
+# 구글 시트 기반 이월 재고 관리 (전월재고 읽기 / 당월 기말재고 저장)
 # ---------------------------------------------------------
 def fetch_closed_lots_from_gs(client):
     lots = {"양상추": [], "양배추": [], "적채": []}
@@ -70,8 +70,7 @@ def fetch_closed_lots_from_gs(client):
                             "vendor": vendor,
                             "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 이월"
                         })
-    except Exception as e:
-        # 시트가 없거나 오류 시 빈 딕셔너리 반환
+    except Exception:
         pass 
     return lots
 
@@ -87,8 +86,10 @@ def save_closed_lots_to_gs(client, end_lots):
         wks.clear()
         if len(payload) > 1:
             wks.update(values=payload, range_name="A1")
+        return True
     except Exception as e:
         st.error(f"'이월재고' 시트 업데이트 중 오류 발생: {e}")
+        return False
 
 # ---------------------------------------------------------
 # 출력 렌더링 헬퍼
@@ -181,7 +182,7 @@ def build_process_log_html(target_date, df_rows, is_filled=False):
     try:
         dt = datetime.strptime(target_date, "%Y-%m-%d")
         yyyy, mm, dd = dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
-    except:
+    except Exception:
         yyyy, mm, dd = "202 ", "  ", "  "
 
     rows_code = ""
@@ -351,7 +352,7 @@ def identify_stock_sheet(xls):
             merged_txt = " ".join(head.dropna().astype(str).values.flatten())
             if "양상추 매입" in merged_txt and "양배추 매입" in merged_txt:
                 return s
-        except:
+        except Exception:
             continue
     return xls.sheet_names[0]
 
@@ -363,18 +364,18 @@ def load_purchase_dataset(file_obj):
         try:
             sheets = pd.read_excel(file_obj, sheet_name=None)
             return pd.concat(sheets.values(), ignore_index=True)
-        except:
+        except Exception:
             return pd.DataFrame()
     for enc in ["utf-8-sig", "cp949", "euc-kr", "utf-8"]:
         try:
             file_obj.seek(0)
             return pd.read_csv(file_obj, encoding=enc)
-        except:
+        except Exception:
             continue
     return pd.DataFrame()
 
 # ---------------------------------------------------------
-# [핵심] 롯트 컬럼 무관 블록 파싱 (순수 투입량 추출)
+# 롯트 컬럼 무관 블록 파싱 (순수 투입량 추출)
 # ---------------------------------------------------------
 KNOWN_INGREDIENTS = ["양상추", "양배추", "적채", "프릴", "로메인", "케일", "적근대", "치커리", "당근", "카이", "버터헤드", "레드오크"]
 
@@ -427,12 +428,12 @@ def parse_production_sheets(xls, excluded):
                     if prep_idx is not None:
                         try:
                             prep_g = float(df_sheet.iloc[prep_idx, c_pos])
-                        except:
+                        except Exception:
                             pass
                     if act_idx is not None:
                         try:
                             act_g = float(df_sheet.iloc[act_idx, c_pos])
-                        except:
+                        except Exception:
                             pass
 
                     if prep_g > 0 or act_g > 0:
@@ -458,7 +459,7 @@ def calculate_subul_fifo(xls, sheet_name, prod_records, prior_lots):
         try:
             num = re.sub(r"[^\d.]", "", str(val))
             return float(num) if num else 0.0
-        except: return 0.0
+        except Exception: return 0.0
 
     grouped_days = {}
     ordered_days = []
@@ -516,9 +517,9 @@ def calculate_subul_fifo(xls, sheet_name, prod_records, prior_lots):
     ordered_days.sort()
 
     queues = {
-        "양상추": copy.deepcopy(prior_lots["양상추"]),
-        "양배추": copy.deepcopy(prior_lots["양배추"]),
-        "적채": copy.deepcopy(prior_lots["적채"])
+        "양상추": copy.deepcopy(prior_lots.get("양상추", [])),
+        "양배추": copy.deepcopy(prior_lots.get("양배추", [])),
+        "적채": copy.deepcopy(prior_lots.get("적채", []))
     }
 
     subul_output = []
@@ -742,31 +743,29 @@ def generate_unified_codes(records, subul_map, df_purchase):
 # ---------------------------------------------------------
 st.title("🥗 샐러드 생산일보 원료코드 및 수불 관리 시스템 (클라우드 통합)")
 
-# 구글 시트 초기화 및 이월 데이터 로딩
+# 구글 시트 초기화 및 전월 이월재고 로딩
 try:
     doc = get_gspread_client()
     saved_lots = fetch_closed_lots_from_gs(doc)
 except Exception as e:
-    # --- 변경된 부분: 상세 에러 메시지 출력 ---
     st.error("🚨 구글 시트 연동 실패! 아래의 상세 에러 메시지를 확인해주세요.")
     st.error(f"에러 원인: {e}")
     st.code(traceback.format_exc())
     st.stop()
-    # ---------------------------------------
 
 with st.sidebar:
-    st.header("🗄️ 구글 시트 '이월재고' 연동")
+    st.header("🗄️ 구글 시트 '전월재고' 연동")
     has_lots = any(len(v) > 0 for v in saved_lots.values())
     if has_lots:
-        st.success("✅ 구글 시트에서 지난달 재고를 정상적으로 불러왔습니다.")
-        with st.expander("현재 장전된 이월 롯트 확인"):
+        st.success("✅ 구글 시트에서 전월 이월재고를 정상적으로 불러왔습니다.")
+        with st.expander("현재 적용 중인 전월 롯트 보기"):
             for k, lots in saved_lots.items():
                 if lots:
                     st.caption(f"**{k}**")
                     for l in lots:
                         st.write(f"- 입고일: {l['yymmdd']} | 잔여: {round(l['avail_g']/1000.0, 1)}kg")
     else:
-        st.info("💡 구글 시트에 기록된 이월 재고가 없습니다.\n당월 엑셀의 입고분부터 순서대로 소진됩니다.")
+        st.info("💡 구글 시트에 기록된 전월 재고가 없습니다.\n당월 엑셀의 입고분부터 순서대로 소진됩니다.")
 
 col_up1, col_up2 = st.columns(2)
 with col_up1:
@@ -774,7 +773,6 @@ with col_up1:
 with col_up2:
     f_csv = st.file_uploader("2. 원료 매입자료 (CSV/Excel) 업로드", type=["csv", "xlsx", "xls"])
 
-# 불필요한 마감 탭 제거 -> 4개 탭 구성으로 단순화
 tab_subul, tab_codes, tab_blank, tab_filled = st.tabs([
     "📊 메인 3종 원재료 수불부",
     "☁️ 전체 원료코드 및 구글시트 연동",
@@ -794,7 +792,7 @@ if f_excel is not None:
             st.error("생산일지 시트에서 투입량이 존재하는 제품 블록을 찾지 못했습니다.")
             st.stop()
 
-        # 구글 시트에서 읽어온 saved_lots를 FIFO 인자로 전달!
+        # 구글 시트의 전월재고(saved_lots)를 반영하여 FIFO 계산
         excel_bytes, subul_rows, fifo_map, end_lots = calculate_subul_fifo(xls_file, stock_sheet, prod_records, saved_lots)
         df_process, df_summary = generate_unified_codes(prod_records, fifo_map, df_purchase)
 
@@ -826,11 +824,10 @@ if f_excel is not None:
             st.dataframe(df_subul, use_container_width=True)
 
         # -----------------------------------------------------
-        # Tab 2: 전체 원료코드 및 구글시트 연동 (출고 및 이월재고 자동저장)
+        # Tab 2: 전체 원료코드 및 구글시트 연동
         # -----------------------------------------------------
         with tab_codes:
             st.subheader("🏷️ 일자별 전체 원료코드 요약 및 구글 시트 연동")
-            st.caption("이곳에서 전송 버튼을 누르면 출고 내역(시트1)과 남은 재고(이월재고 탭)가 한 번에 구글 시트로 업데이트됩니다.")
             
             if not df_summary.empty:
                 sort_order = {"양상추": 1, "양배추": 2, "적채": 3, "프릴": 4}
@@ -851,33 +848,37 @@ if f_excel is not None:
                 st.dataframe(df_summary_disp, use_container_width=True)
 
                 st.markdown("---")
-                st.subheader("☁️ 구글 스프레드시트 일괄 연동 (출고량 & 재고)")
+                
+                # 영역 1: 평상시 출고량 전송 (이월재고는 건드리지 않음)
+                st.subheader("☁️ 1. 평상시 작업: 출고량만 구글 시트(시트1)에 동기화")
+                st.caption("수시로 누르셔도 좋습니다. 구글 시트의 기존 '이월재고(전월재고)'는 절대 훼손되지 않고 출고 내역만 덮어씁니다.")
                 col_d_start, col_d_end = st.columns(2)
                 with col_d_start:
                     date_from = st.date_input("동기화 시작일", value=datetime.today().replace(day=1), key="sync_from")
                 with col_d_end:
                     date_to = st.date_input("동기화 종료일", value=datetime.today(), key="sync_to")
 
-                if st.button("🚀 선택 기간 전체 출고량 전송 & 이월 재고 업데이트", type="primary", use_container_width=True):
-                    with st.spinner("구글 스프레드시트 연동 중... (API 최적화 반영)"):
+                if st.button("🚀 선택 기간 출고량 구글 시트(시트1) 전송", type="primary", use_container_width=True):
+                    with st.spinner("구글 스프레드시트(시트1) 반영 중..."):
                         try:
                             s_str = date_from.strftime("%Y-%m-%d")
                             e_str = date_to.strftime("%Y-%m-%d")
                             df_target = df_summary_disp[(df_summary_disp["날짜"] >= s_str) & (df_summary_disp["날짜"] <= e_str)]
 
-                            # 1. 시트1 (출고량) 업데이트
                             wks = doc.worksheet("시트1")
                             sheet_rows = wks.get_all_values()
                             header = sheet_rows[0] if sheet_rows else []
                             
                             retained_data = [header] if header else []
+                            deleted_count = 0
                             for row_val in sheet_rows[1:]:
                                 try:
                                     r_dt = row_val[0].strip()
                                     if s_str <= r_dt <= e_str and len(row_val) > 2 and row_val[2].strip() == "시스템자동":
+                                        deleted_count += 1
                                         continue 
                                     retained_data.append(row_val)
-                                except:
+                                except Exception:
                                     retained_data.append(row_val)
 
                             new_payload = []
@@ -892,16 +893,39 @@ if f_excel is not None:
                             if retained_data + new_payload:
                                 wks.update(values=retained_data + new_payload, range_name="A1")
 
-                            # 2. 이월재고 시트 업데이트 (신규 추가된 핵심 로직)
-                            save_closed_lots_to_gs(doc, end_lots)
-
-                            st.success("✅ 구글 시트 연동 완료! (출고 내역 전송 및 다음 달 이월 재고 업데이트 성공)")
+                            st.success(f"✅ 출고량 동기화 완료! (기존 {deleted_count}건 갱신 / 신규 {len(new_payload)}건 등록)")
                             st.balloons()
                         except Exception as ex:
                             st.error(f"구글 시트 연동 실패: {ex}")
 
+                st.markdown("---")
+                
+                # 영역 2: 월말 최종 마감 확정 (익월을 위한 이월재고 저장)
+                st.subheader("🔒 2. 월말 최종 마감: 당월 기말재고를 구글 시트(이월재고)로 확정 저장")
+                st.caption("⚠️ **주의:** 당월의 모든 일자 작업이 완전히 끝난 **말일**에만 누르세요! 이 버튼을 누르면 당월 엑셀의 최종 잔여 롯트가 구글 시트에 저장되어 **다음 달 작업의 기초재고**가 됩니다.")
+                
+                last_dt = subul_rows[-1]["date"] if subul_rows else "-"
+                st.write(f"▼ **현재 엑셀의 마지막 날짜 ({last_dt}) 기준 잔여 롯트 현황**")
+                
+                has_end_stock = False
+                for item_k, l_list in end_lots.items():
+                    total_kg = sum(x["avail_g"] for x in l_list) / 1000.0
+                    if total_kg > 0: has_end_stock = True
+                    st.write(f"• **{item_k}**: 총 {round(total_kg, 1)}kg (잔여 롯트 {len(l_list)}건)")
+                    for l in l_list:
+                        st.caption(f"   - 입고일: {l['yymmdd']} | 잔여량: {round(l['avail_g']/1000.0, 1)}kg")
+
+                if st.button("🔒 [월말 마감] 위 잔여재고를 구글 시트 '이월재고'로 확정 저장", type="secondary", use_container_width=True):
+                    if not has_end_stock:
+                        st.warning("⚠️ 마지막 날짜에 잔여 재고가 0kg입니다. 그래도 저장하시겠습니까? (이월재고가 0으로 초기화됩니다)")
+                    
+                    with st.spinner("구글 시트 '이월재고' 탭 업데이트 중..."):
+                        if save_closed_lots_to_gs(doc, end_lots):
+                            st.success(f"✅ **{last_dt}** 기준 기말재고가 구글 시트 '이월재고' 탭에 확정 저장되었습니다! 다음 달 작업 시 이 데이터가 전월재고로 자동 로드됩니다.")
+                            st.balloons()
+
         # -----------------------------------------------------
-        # Tab 3 & 4: 전처리 공정일지 (기존 탭 4,5 가 당겨짐)
+        # Tab 3 & 4: 전처리 공정일지
         # -----------------------------------------------------
         for tab_target, is_done in zip([tab_blank, tab_filled], [False, True]):
             with tab_target:
