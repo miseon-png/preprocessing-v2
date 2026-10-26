@@ -753,17 +753,42 @@ except Exception as e:
     st.code(traceback.format_exc())
     st.stop()
 
+# ---------------------------------------------------------
+# [수정] 사이드바: 전월 이월재고 시각적 표 & 요약 메트릭 배치
+# ---------------------------------------------------------
 with st.sidebar:
     st.header("🗄️ 구글 시트 '전월재고' 연동")
     has_lots = any(len(v) > 0 for v in saved_lots.values())
+    
     if has_lots:
-        st.success("✅ 구글 시트에서 전월 이월재고를 정상적으로 불러왔습니다.")
-        with st.expander("현재 적용 중인 전월 롯트 보기"):
-            for k, lots in saved_lots.items():
-                if lots:
-                    st.caption(f"**{k}**")
-                    for l in lots:
-                        st.write(f"- 입고일: {l['yymmdd']} | 잔여: {round(l['avail_g']/1000.0, 1)}kg")
+        st.success("✅ 전월 이월재고 장전 완료")
+        
+        # 1. 원재료별 수량 및 롯트 목록을 표(Dataframe) 형태로 바로 표시
+        preview_rows = []
+        for k in ["양상추", "양배추", "적채"]:
+            lots = saved_lots.get(k, [])
+            total_kg = sum(l.get("avail_g", 0.0) for l in lots) / 1000.0
+            lot_details = ", ".join([f"{l['yymmdd']}({round(l['avail_g']/1000.0, 1)}kg)" for l in lots]) if lots else "-"
+            
+            preview_rows.append({
+                "원재료": k,
+                "이월 재고량": f"{round(total_kg, 1)} kg",
+                "적용 롯트": lot_details
+            })
+            
+        df_preview = pd.DataFrame(preview_rows)
+        st.dataframe(df_preview, use_container_width=True, hide_index=True)
+        
+        # 2. 메트릭 카드로 3종 총량 한눈에 확인
+        c1, c2, c3 = st.columns(3)
+        y_sum = sum(l.get("avail_g", 0.0) for l in saved_lots.get("양상추", [])) / 1000.0
+        b_sum = sum(l.get("avail_g", 0.0) for l in saved_lots.get("양배추", [])) / 1000.0
+        j_sum = sum(l.get("avail_g", 0.0) for l in saved_lots.get("적채", [])) / 1000.0
+        
+        c1.metric("양상추", f"{round(y_sum, 1)}kg")
+        c2.metric("양배추", f"{round(b_sum, 1)}kg")
+        c3.metric("적채", f"{round(j_sum, 1)}kg")
+        
     else:
         st.info("💡 구글 시트에 기록된 전월 재고가 없습니다.\n당월 엑셀의 입고분부터 순서대로 소진됩니다.")
 
