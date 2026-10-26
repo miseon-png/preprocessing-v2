@@ -71,7 +71,8 @@ def fetch_closed_lots_from_gs(client):
                             "label": f"{yymmdd[2:4]}/{yymmdd[4:]} 이월"
                         })
     except Exception as e:
-        pass # 시트가 없거나 권한 오류 시 빈 딕셔너리 반환 (자연스럽게 당월부터 시작)
+        # 시트가 없거나 오류 시 빈 딕셔너리 반환
+        pass 
     return lots
 
 def save_closed_lots_to_gs(client, end_lots):
@@ -746,8 +747,12 @@ try:
     doc = get_gspread_client()
     saved_lots = fetch_closed_lots_from_gs(doc)
 except Exception as e:
-    st.error("구글 시트 연동에 실패했습니다. 자격증명을 확인해주세요.")
+    # --- 변경된 부분: 상세 에러 메시지 출력 ---
+    st.error("🚨 구글 시트 연동 실패! 아래의 상세 에러 메시지를 확인해주세요.")
+    st.error(f"에러 원인: {e}")
+    st.code(traceback.format_exc())
     st.stop()
+    # ---------------------------------------
 
 with st.sidebar:
     st.header("🗄️ 구글 시트 '이월재고' 연동")
