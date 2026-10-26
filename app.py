@@ -184,6 +184,9 @@ def render_direct_print_button(html_payload, button_label="🖨️ 바로 출력
 
 def render_printable_document(title, df_data):
     html_table = df_data.to_html(index=False, classes="report-table")
+    # HTML 내 줄바꿈(\n)을 <br>로 변환하여 엑셀 렌더링 시에도 예쁘게 보이도록 처리
+    html_table = html_table.replace('\\n', '<br>')
+    
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -256,7 +259,11 @@ def render_process_log_html(date_str, df_target, is_completed=False):
             if prod_name != current_product:
                 current_product = prod_name
                 prod_row_count = len(df_target[df_target['제품명'] == prod_name])
-                prod_cell = f'<td rowspan="{prod_row_count}"><b>{prod_name}</b></td>'
+                
+                # ★ 데이터프레임의 줄바꿈(\n)을 HTML 태그(<br>)로 변환 ★
+                html_prod_name = str(prod_name).replace('\n', '<br>')
+                
+                prod_cell = f'<td rowspan="{prod_row_count}" style="line-height: 1.4;"><b>{html_prod_name}</b></td>'
                 check_cell = f'<td rowspan="{prod_row_count}" style="font-size:8pt; text-align:left; line-height:1.5;">부패,변질,잔잎 등의 비가식부위 제거<br>원재료 상태 및 이물제거 확인</td>'
             else:
                 prod_cell = ""
@@ -437,7 +444,7 @@ def parse_csv_purchase(uploaded_file):
         except: continue
     return pd.DataFrame()
 
-# [핵심 수정] 완벽하게 차단벽이 적용된 블록 단위 파싱 로직
+# [핵심 수정] 거래처 추출 및 차단벽이 적용된 블록 단위 파싱 로직
 def get_production_records(xls, exclude_sheets):
     daily_sheets = [s for s in xls.sheet_names if s not in exclude_sheets and not s.startswith("재고") and not re.match(r"^\d{2}\.\d{2}$", s.strip())]
     records = []
@@ -448,10 +455,13 @@ def get_production_records(xls, exclude_sheets):
         for idx, row in df_s.iterrows():
             row_vals = [str(x).strip() for x in row.tolist()]
             if '발주' in row_vals and '수량' in row_vals:
-                # 1. 기준 날짜 찾기
+                # 1. 기준 날짜 및 거래처명 찾기 (B열 = 인덱스 1)
                 date_val = row_vals[0]
                 _, prod_yymmdd, _ = extract_yymmdd_and_mmdd(date_val)
                 std_date = f"20{prod_yymmdd[:2]}-{prod_yymmdd[2:4]}-{prod_yymmdd[4:]}"
+                
+                vendor_name = row_vals[1] if len(row_vals) > 1 else ""
+                if vendor_name == 'nan': vendor_name = ""
                 
                 # 2. 원료 기입열(Column) 파악
                 ingredients = []
@@ -467,16 +477,13 @@ def get_production_records(xls, exclude_sheets):
                 
                 # 4. 준비량 및 실투입량 행 찾기 (차단벽 로직 적용)
                 prep_row, act_row = None, None
-                # 제품명 행 다음(idx + 2)부터 아래로 스캔
                 for scan_idx in range(idx + 2, min(idx + 20, len(df_s))):
                     scan_vals_raw = [str(x) for x in df_s.iloc[scan_idx].tolist()]
                     scan_vals = [x.replace(" ", "") for x in scan_vals_raw]
                     
-                    # [★차단벽] 다음 제품 블록(발주/수량)이 등장하면 남의 구역이므로 즉시 탐색 중단!
                     if '발주' in scan_vals and '수량' in scan_vals:
                         break
                     
-                    # 아직 찾지 못했을 때만(None) 행 번호 기록
                     if any('전처리준비' in x for x in scan_vals) and prep_row is None: 
                         prep_row = scan_idx
                     if any('실투입' in x for x in scan_vals) and act_row is None: 
@@ -502,6 +509,7 @@ def get_production_records(xls, exclude_sheets):
                         records.append({
                             'std_date': std_date,
                             'prod_yymmdd': prod_yymmdd,
+                            'vendor': vendor_name,       # ★ 거래처명 추가
                             'product': product_name,
                             'ingredient': ing_name,
                             'lot': lot_str,
@@ -749,6 +757,12 @@ def build_final_reports(raw_records, fifo_map, df_purchase):
     
     for rec in raw_records:
         std_date = rec['std_date']
+        vendor = rec.get('vendor', '')
+        p_name_raw = rec['product']
+        
+        # ★ 엑셀 데이터상 줄바꿈(\n) 형태로 거래처명과 제품명 합치기 ★
+        combined_product_name = f"{vendor}\n{p_name_raw}" if vendor else p_name_raw
+        
         ing_raw = rec['ingredient']
         lot = rec['lot']
         act_g = rec['act_g']
@@ -798,7 +812,7 @@ def build_final_reports(raw_records, fifo_map, df_purchase):
 
         final_rows.append({
             "생산일자": std_date,
-            "제품명": rec['product'],
+            "제품명": combined_product_name, # 거래처+제품명 
             "품목": ing_lookup,
             "작업일지 기준 코드": code_worklog,
             "수불부 기준 코드": code_subul,
